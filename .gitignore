@@ -1,0 +1,4 @@
+*.txt
+*.pdf
+/old_files/
+/venv/
