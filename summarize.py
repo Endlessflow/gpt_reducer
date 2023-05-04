@@ -4,58 +4,16 @@ from langchain.document_loaders import PyPDFLoader  # for loading the pdf
 from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
 from langchain import LLMChain
 from langchain.text_splitter import CharacterTextSplitter
+from templates import CONCISE_SUMMARY_TEMPLATE, REFINE_SUMMARY_TEMPLATE
+from utils import append_to_file, file_exists, read_file
 
 # CONSTANTS
-FILENAME = "sem4_tris-fouilles"
-FILEEXTENSION = ".pdf"
-
-# UTILITY FUNCTIONS
-
-
-def append_to_file(file_name, string):
-    with open(file_name, "a") as file:
-        file.write(string)
-
-
-def read_file(file_name):
-    with open(file_name, "r") as file:
-        return file.read()
-
-
-def file_exists(file_name):
-    try:
-        with open(file_name, "r") as file:
-            return True
-    except:
-        return False
+FILENAME = "Cedille_transcript"
+FILEEXTENSION = ".txt"
 
 # ------------------------------
 # SCRIPT
 # ------------------------------
-
-
-# TEMPLATES
-CONCISE_SUMMARY_TEMPLATE = """
-Write a concise summary of the following:
-
-
-"{text}"
-
-
-CONCISE SUMMARY:"""
-
-REFINE_SUMMARY_TEMPLATE = """
-Your job is to produce a final summary.
-We have provided an existing summary up to a certain point: {summary}
-We have the opportunity to refine the existing summary(only if needed) with some more context below.
-------------
-{context}
-------------
-Given the above context, refine the existing summary
-If the context isn't useful, return the existing summary.
-
-FINAL SUMMARY:
-"""
 
 # SETUP THE LLM MODEL WE WILL USE
 chat = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0, max_tokens=2000)
@@ -76,14 +34,12 @@ refine_summary_chat_prompt = ChatPromptTemplate.from_messages(
 refine_summary_chain = LLMChain(
     llm=chat, prompt=refine_summary_chat_prompt, verbose=True)
 
-# SETUP THE DOCUMENT WE WILL SUMMARIZE
-filename = FILENAME + FILEEXTENSION
-loader = PyPDFLoader(filename)
-document = loader.load_and_split()
-
 # SETUP A TEXT SPLITTER TO SPLIT TEXT INTO CHUNKS WHEN NEEDED
 text_splitter = CharacterTextSplitter.from_tiktoken_encoder(
     separator='\n\n', chunk_size=750, chunk_overlap=150)
+
+# SOME USEFUL VARIABLES
+filename = FILENAME + FILEEXTENSION
 
 # ------------------------------
 # PROCESSING STEP 1: LAYERED_MAP_REDUCE
@@ -91,11 +47,11 @@ text_splitter = CharacterTextSplitter.from_tiktoken_encoder(
 
 # OUR OUTPUT SHALL BE STORED IN A LIST OF LAYERS
 # EACH LAYER WILL BE A STRING (FOR NOW)
-# LAYERS REPRESENT LEVELS OF ABSTRACTION WITH 0 BEING THE LEVEL OF ABSTRACTION RIGHT BELOW THE DOCUMENT
+# LAYERS REPRESENT LEVELS OF ABSTRACTION WITH 0 BEING THE ORIGINAL TEXT
 output_layers = []
 
 # INITIALIZE SOME VARIABLES
-split_document = document
+document = []
 layer_number = 0
 
 while True:
@@ -103,30 +59,52 @@ while True:
     if file_exists(f"{FILENAME}_layer_{layer_number}.txt"):
         output_layers.append(read_file(f"{FILENAME}_layer_{layer_number}.txt"))
     else:
-        # IF IT DOESN'T EXIST, WE NEED TO GENERATE IT
+        # IF IT DOESN'T EXIST, WE NEED TO GENERATE THE NEW LAYER
         new_layer = ""
-        for section in split_document:
-            if layer_number == 0:
-                # THE FIRST LAYER IS THE DOCUMENT ITSELF AND THUS HAS A DIFFERENT OBJECT TYPE
+
+        # IF THE LAYER NUMBER IS 0, WE FIRST NEED TO LOAD THE DOCUMENT
+        # OTHERWISE WE ALREADY HAVE THE DOCUMENT LOADED FROM THE PREVIOUS LAYER
+        if layer_number == 0:
+                if FILEEXTENSION == ".pdf":
+                    # IF THE FILE IS A PDF, WE NEED TO LOAD IT WITH THE PDF LOADER
+                    loader = PyPDFLoader(filename)
+                    document = loader.load_and_split()
+
+                elif (FILEEXTENSION == ".txt"):
+                    single_line_break_text_splitter = CharacterTextSplitter.from_tiktoken_encoder(separator='.', chunk_size=750, chunk_overlap=0)
+                    text = read_file(filename)
+                    document = single_line_break_text_splitter.split_text(text)
+
+
+        for section in document:
+            
+            if FILEEXTENSION == ".pdf":
                 input_text = section.page_content
             else:
                 # ALL OTHER LAYERS ARE JUST STRINGS
                 input_text = section
 
-            # FORMAT THE PROMPT TO FEED THE LLM TO GENERATE A CONCISE SUMMARY FOR THE SECTION
-            concise_summary_formated_chat_prompt = concise_summary_chat_prompt.format_prompt(
-                text=input_text).to_messages()
+            if layer_number == 0:
+                # IF IT IS THE FIRST LAYER, WE DON'T NEED TO GENERATE A SUMMARY
+                output = input_text + '\n\n'
+            else:
+                # FORMAT THE PROMPT TO FEED THE LLM TO GENERATE A CONCISE SUMMARY FOR THE SECTION
+                concise_summary_formated_chat_prompt = concise_summary_chat_prompt.format_prompt(
+                    text=input_text).to_messages()
 
-            # RUN THE CHAIN TO GENERATE SAID SUMMARY
-            section_summary = concise_summary_chain.run(
-                text=input_text) + '\n\n'
+                # RUN THE CHAIN TO GENERATE SAID SUMMARY
+                output = concise_summary_chain.run(
+                    text=input_text) + '\n\n'
+                
+                print(output)
+
 
             # APPEND THE SUMMARY TO THE CURRENT LAYER
-            new_layer += section_summary
+            new_layer += output
 
             # APPEND THE SUMMARY TO THE TEMP TEXT FILE
             append_to_file(
-                f"{FILENAME}_layer_{layer_number}.txt", section_summary)
+                f"{FILENAME}_layer_{layer_number}.txt", output)
 
         # APPEND THE LAYER TO THE OUTPUT LAYERS LIST
         output_layers.append(new_layer)
